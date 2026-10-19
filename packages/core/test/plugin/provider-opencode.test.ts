@@ -70,17 +70,51 @@ function withEnv<A, E, R>(vars: Record<string, string | undefined>, effect: () =
 
 const cost = (input: number, output = 0) => [{ input, output, cache: { read: 0, write: 0 } }]
 
+const vegaModel = {
+  id: "vega/test-model",
+  name: "Vega Test Model",
+  canonical_slug: "vega/test-model-20261017",
+  created: 1792225624,
+  context_length: 128000,
+  architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+  pricing: { prompt: "0.000001", completion: "0.000002", input_cache_read: "0.0000001" },
+  top_provider: { context_length: 128000, max_completion_tokens: 4096 },
+  supported_parameters: ["tools", "temperature", "reasoning"],
+}
+
+const models = (list: unknown[] = [vegaModel]) =>
+  HttpClient.make((request) =>
+    Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ data: list }))),
+  )
+
+const paidModel = (catalog: Catalog.Draft) => {
+  const provider = ProviderV2.Info.make({
+    ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
+    api: { type: "aisdk", package: "test-provider" },
+  })
+  const model = ModelV2.Info.make({
+    ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
+    api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
+    cost: cost(1),
+  })
+  catalog.provider.update(provider.id, () => {})
+  catalog.model.update(provider.id, model.id, (draft) => {
+    draft.cost = [...model.cost]
+  })
+}
+
 describe("OpencodePlugin", () => {
-  it.effect("registers account and service account methods", () =>
+  it.effect("registers account, key and env methods", () =>
     Effect.gen(function* () {
       yield* addPlugin()
       expect((yield* (yield* Integration.Service).get(Integration.ID.make("opencode")))?.methods).toEqual([
         {
           id: Integration.MethodID.make("device"),
           type: "oauth",
-          label: "OpenCode Console account",
+          label: "Vega Code account",
         },
-        { type: "key", label: "API key (service account)" },
+        { type: "key", label: "API key" },
+        { type: "env", names: ["VEGA_API_KEY", "VEGACODE_API_KEY", "OPENCODE_API_KEY"] },
       ])
     }),
   )
@@ -94,7 +128,7 @@ describe("OpencodePlugin", () => {
             Response.json({
               device_code: "device",
               user_code: "user",
-              verification_uri_complete: "/console/device?user_code=user&client_id=opencode-cli",
+              verification_uri_complete: "/device?user_code=user",
               expires_in: 60,
               interval: 60,
             }),
@@ -108,7 +142,7 @@ describe("OpencodePlugin", () => {
         methodID: Integration.MethodID.make("device"),
         inputs: {},
       })
-      expect(attempt.url).toBe("https://opencode.ai/console/device?user_code=user&client_id=opencode-cli")
+      expect(attempt.url).toBe("https://api.vega.chat/device?user_code=user")
     }),
   )
 
@@ -142,7 +176,7 @@ describe("OpencodePlugin", () => {
     }),
   )
 
-  it.live("loads providers and models from the connected OpenCode server", () =>
+  it.live("loads Vega Code models from the VEGA model list", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
         const authorization: Array<string | null> = []
@@ -155,39 +189,8 @@ describe("OpencodePlugin", () => {
             fetch: async (request) => {
               await gate.promise
               authorization.push(request.headers.get("authorization"))
-              const origin = new URL(request.url).origin
-              return Response.json({
-                config: {
-                  enterprise: { url: origin },
-                  provider: {
-                    remote: {
-                      name: "Remote",
-                      npm: "@ai-sdk/openai-compatible",
-                      api: `${origin}/v1`,
-                      env: ["REMOTE_API_KEY"],
-                      options: {
-                        apiKey: "{env:REMOTE_API_KEY}",
-                        headers: { "x-org-id": "org" },
-                        custom: "value",
-                      },
-                      models: {
-                        model: {
-                          name: "Remote Model",
-                          family: "remote",
-                          release_date: "2026-01-02",
-                          tool_call: true,
-                          modalities: { input: ["text", "image"], output: ["text"] },
-                          options: { apiKey: "model-secret", temperature: 0.5 },
-                          variants: { high: { apiKey: "variant-secret", temperature: 0.2 } },
-                          cost: { input: 1, output: 2, cache_read: 0.1 },
-                          limit: { context: 1000, output: 100 },
-                        },
-                        disabled: { name: "Disabled", status: "deprecated" },
-                      },
-                    },
-                  },
-                },
-              })
+              expect(new URL(request.url).pathname).toBe("/api/v1/models")
+              return Response.json({ data: [vegaModel] })
             },
           }),
         }
@@ -213,43 +216,33 @@ describe("OpencodePlugin", () => {
           expect(authorization).toEqual([])
           release()
 
-          const provider = required(
-            yield* eventually(
-              catalog.provider.get(ProviderV2.ID.make("remote")),
-              (item) => item?.integrationID === Integration.ID.make("opencode"),
-            ),
-          )
+          yield* eventually(catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("vega/test-model")), Boolean)
+          const provider = required(yield* catalog.provider.get(ProviderV2.ID.opencode))
           expect(provider).toMatchObject({
-            name: "Remote",
+            name: "Vega Code",
             integrationID: "opencode",
             api: {
               type: "aisdk",
               package: "@ai-sdk/openai-compatible",
-              url: `${server.url.origin}/v1`,
+              url: `${server.url.origin}/api/v1`,
             },
           })
-          expect(provider.request).toEqual({ headers: { "x-org-id": "org" }, body: { custom: "value" } })
           expect(yield* (yield* Integration.Service).get(Integration.ID.make("remote"))).toBeUndefined()
 
-          const model = required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("model")))
+          const model = required(
+            yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("vega/test-model")),
+          )
           expect(model).toMatchObject({
-            name: "Remote Model",
-            family: "remote",
+            name: "Vega Test Model",
+            family: "test-model-20261017",
             capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
-            cost: [{ input: 1, output: 2, cache: { read: 0.1, write: 0 } }],
-            limit: { context: 1000, output: 100 },
+            limit: { context: 128000, output: 4096 },
+            enabled: true,
           })
-          expect(model.request.body).toEqual({ custom: "value", temperature: 0.5 })
-          expect(model.variants).toEqual([
-            {
-              id: ModelV2.VariantID.make("high"),
-              headers: {},
-              body: { temperature: 0.2 },
-            },
-          ])
-          expect(
-            required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("disabled"))).enabled,
-          ).toBe(false)
+          expect(model.cost[0].input).toBe(1)
+          expect(model.cost[0].output).toBe(2)
+          expect(model.cost[0].cache.read).toBeCloseTo(0.1)
+          expect(model.cost[0].cache.write).toBe(0)
           expect(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("stale"))).toBeDefined()
           expect(authorization).toContain("Bearer secret")
         }),
@@ -257,168 +250,26 @@ describe("OpencodePlugin", () => {
     ),
   )
 
-  it.effect("uses a public key and disables paid models without credentials", () =>
-    withEnv({ OPENCODE_API_KEY: undefined }, () =>
+  it.effect("removes catalog models without credentials", () =>
+    withEnv({ VEGA_API_KEY: undefined, VEGACODE_API_KEY: undefined, OPENCODE_API_KEY: undefined }, () =>
       Effect.gen(function* () {
         const catalog = yield* Catalog.Service
-        yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
-            cost: cost(1),
-          })
-          catalog.provider.update(provider.id, () => {})
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
-          })
-        })
+        yield* catalog.transform(paidModel)
         yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
-        expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(false)
+        yield* eventually(catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid")), (item) => !item)
+        expect(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).toBeUndefined()
       }),
     ),
   )
 
-  it.effect("keeps free models without credentials", () =>
-    withEnv({ OPENCODE_API_KEY: undefined }, () =>
+  it.effect("keeps catalog models when a credential is configured directly", () =>
+    withEnv({ VEGA_API_KEY: undefined, VEGACODE_API_KEY: undefined, OPENCODE_API_KEY: undefined }, () =>
       Effect.gen(function* () {
         const catalog = yield* Catalog.Service
         yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("free")),
-            api: { id: ModelV2.ID.make("free"), type: "aisdk", package: "test-provider" },
-            cost: cost(0),
-          })
-          catalog.provider.update(provider.id, () => {})
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
-          })
-        })
-        yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
-        expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("free"))).enabled).toBe(true)
-      }),
-    ),
-  )
-
-  it.effect("treats output-only cost as free without credentials", () =>
-    withEnv({ OPENCODE_API_KEY: undefined }, () =>
-      Effect.gen(function* () {
-        const catalog = yield* Catalog.Service
-        yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("output-only")),
-            api: { id: ModelV2.ID.make("output-only"), type: "aisdk", package: "test-provider" },
-            cost: cost(0, 1),
-          })
-          catalog.provider.update(provider.id, () => {})
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
-          })
-        })
-        yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBe("public")
-        expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("output-only"))).enabled).toBe(
-          true,
-        )
-      }),
-    ),
-  )
-
-  it.effect("uses OPENCODE_API_KEY as credentials", () =>
-    withEnv({ OPENCODE_API_KEY: "secret" }, () =>
-      Effect.gen(function* () {
-        const catalog = yield* Catalog.Service
-        yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
-            cost: cost(1),
-          })
-          catalog.provider.update(provider.id, () => {})
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
-          })
-        })
-        yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBeUndefined()
-        expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(true)
-      }),
-    ),
-  )
-
-  it.effect("uses configured provider env vars as credentials", () =>
-    withEnv({ OPENCODE_API_KEY: undefined, CUSTOM_OPENCODE_API_KEY: "secret" }, () =>
-      Effect.gen(function* () {
-        const catalog = yield* Catalog.Service
-        const integrations = yield* Integration.Service
-        yield* integrations.transform((editor) => {
-          editor.method.update({
-            integrationID: Integration.ID.make("opencode"),
-            method: { type: "env", names: ["CUSTOM_OPENCODE_API_KEY"] },
-          })
-        })
-        yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
-            cost: cost(1),
-          })
-          catalog.provider.update(provider.id, () => {})
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
-          })
-        })
-        yield* addPlugin()
-        expect(required(yield* catalog.provider.get(ProviderV2.ID.opencode)).request.body.apiKey).toBeUndefined()
-        expect(required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).enabled).toBe(true)
-      }),
-    ),
-  )
-
-  it.effect("uses configured apiKey as credentials", () =>
-    withEnv({ OPENCODE_API_KEY: undefined }, () =>
-      Effect.gen(function* () {
-        const catalog = yield* Catalog.Service
-        yield* catalog.transform((catalog) => {
-          const provider = ProviderV2.Info.make({
-            ...ProviderV2.Info.empty(ProviderV2.ID.opencode),
-            api: { type: "aisdk", package: "test-provider" },
-            request: {
-              headers: {},
-              body: { apiKey: "configured" },
-            },
-          })
-          const model = ModelV2.Info.make({
-            ...ModelV2.Info.empty(provider.id, ModelV2.ID.make("paid")),
-            api: { id: ModelV2.ID.make("paid"), type: "aisdk", package: "test-provider" },
-            cost: cost(1),
-          })
-          catalog.provider.update(provider.id, (draft) => {
-            draft.request = provider.request
-          })
-          catalog.model.update(provider.id, model.id, (draft) => {
-            draft.cost = [...model.cost]
+          paidModel(catalog)
+          catalog.provider.update(ProviderV2.ID.opencode, (draft) => {
+            draft.request.body.apiKey = "configured"
           })
         })
         yield* addPlugin()
@@ -428,8 +279,23 @@ describe("OpencodePlugin", () => {
     ),
   )
 
+  it.effect("uses VEGA_API_KEY as credentials and replaces catalog models", () =>
+    withEnv({ VEGA_API_KEY: "secret", VEGACODE_API_KEY: undefined, OPENCODE_API_KEY: undefined }, () =>
+      Effect.gen(function* () {
+        const catalog = yield* Catalog.Service
+        yield* catalog.transform(paidModel)
+        yield* addPlugin(models())
+        yield* eventually(catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("vega/test-model")), Boolean)
+        expect(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("paid"))).toBeUndefined()
+        expect(
+          required(yield* catalog.model.get(ProviderV2.ID.opencode, ModelV2.ID.make("vega/test-model"))).enabled,
+        ).toBe(true)
+      }),
+    ),
+  )
+
   it.effect("ignores non-opencode providers and models", () =>
-    withEnv({ OPENCODE_API_KEY: undefined }, () =>
+    withEnv({ VEGA_API_KEY: undefined, VEGACODE_API_KEY: undefined, OPENCODE_API_KEY: undefined }, () =>
       Effect.gen(function* () {
         const catalog = yield* Catalog.Service
         yield* catalog.transform((catalog) => {

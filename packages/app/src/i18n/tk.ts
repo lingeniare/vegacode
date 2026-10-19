@@ -226,11 +226,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API açary",
   "provider.connect.apiKey.required": "API açary talap edilýär",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen kodlaşdyrmak serişdeleri üçin ygtybarly optimallaşdyrylan modelleriň toplumyna girmäge mümkinçilik berýär.",
+    "Vega Code kodlaşdyrmak serişdeleri üçin ygtybarly optimallaşdyrylan modelleriň toplumyna girmäge mümkinçilik berýär.",
   "provider.connect.opencodeZen.line2":
     "Zekeje API açary bilen Claude, GPT, Gemini, GLM we başgalar ýaly modellere girip bilersiňiz.",
   "provider.connect.opencodeZen.visit.prefix": "Sapar ",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": " API açaryňyzy ýygnamak.",
   "provider.connect.oauth.code.visit.prefix": "Sapar ",
   "provider.connect.oauth.code.visit.link": "Bu baglanyşyk",

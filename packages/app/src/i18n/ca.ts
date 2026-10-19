@@ -227,11 +227,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "tecla API.",
   "provider.connect.apiKey.required": "La clau API és necessària",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen us ofereix accés a un conjunt seleccionat de models optimitzats fiables per a agents de codificació.",
+    "Vega Code us ofereix accés a un conjunt seleccionat de models optimitzats fiables per a agents de codificació.",
   "provider.connect.opencodeZen.line2":
     "Amb una sola tecla API tindreu accés a models com ara Claude, GPT, Gemini, GLM i més.",
   "provider.connect.opencodeZen.visit.prefix": "Visita ",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": " per recollir la teva clau API.",
   "provider.connect.oauth.code.visit.prefix": "Visita ",
   "provider.connect.oauth.code.visit.link": "aquest enllaç",

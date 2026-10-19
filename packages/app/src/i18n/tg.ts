@@ -226,11 +226,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API калид",
   "provider.connect.apiKey.required": "API калид лозим аст",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen ба шумо дастрасӣ ба маҷмӯи мураттабшудаи моделҳои боэътимоди оптимизатсияшуда барои агентҳои рамзгузориро медиҳад.",
+    "Vega Code ба шумо дастрасӣ ба маҷмӯи мураттабшудаи моделҳои боэътимоди оптимизатсияшуда барои агентҳои рамзгузориро медиҳад.",
   "provider.connect.opencodeZen.line2":
     "Бо як калиди API шумо метавонед ба моделҳое мисли Claude, GPT, Gemini, GLM ва ғайра дастрасӣ пайдо кунед.",
   "provider.connect.opencodeZen.visit.prefix": "Ташриф",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": "барои гирифтани калиди API худ.",
   "provider.connect.oauth.code.visit.prefix": "Ташриф",
   "provider.connect.oauth.code.visit.link": "ин пайванд",

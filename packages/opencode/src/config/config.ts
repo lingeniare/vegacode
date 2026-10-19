@@ -492,9 +492,9 @@ const layer = Layer.effect(
         const activeAccount = Option.getOrUndefined(
           yield* accountSvc.active().pipe(Effect.catch(() => Effect.succeed(Option.none()))),
         )
-        if (activeAccount?.active_org_id) {
+        if (activeAccount) {
           const accountID = activeAccount.id
-          const orgID = activeAccount.active_org_id
+          const orgID = Option.fromNullishOr(activeAccount.active_org_id)
           const url = activeAccount.url
           yield* Effect.gen(function* () {
             const [configOpt, tokenOpt] = yield* Effect.all(
@@ -507,7 +507,7 @@ const layer = Layer.effect(
             }
 
             if (Option.isSome(configOpt)) {
-              const source = `${url}/api/config`
+              const source = `${url}/api/v1/models`
               const next = yield* loadConfig(JSON.stringify(configOpt.value), {
                 dir: path.dirname(source),
                 source,

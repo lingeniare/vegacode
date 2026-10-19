@@ -12,11 +12,9 @@ import { ProviderV2 } from "../../provider"
 import { ConfigProviderV1 } from "../../v1/config/provider"
 import { ConfigProviderOptionsV1 } from "../../v1/config/provider-options"
 import { ConfigV1 } from "../../v1/config/config"
+import { apiPath, clientID, defaultServer, Models, provider } from "./vega"
 
-const defaultServer = "https://opencode.ai/console"
-const clientID = "opencode-cli"
 const methodID = Integration.MethodID.make("device")
-const RemoteResponse = Schema.Struct({ config: ConfigV1.Info })
 const Device = Schema.Struct({
   device_code: Schema.String,
   user_code: Schema.String,
@@ -26,13 +24,12 @@ const Device = Schema.Struct({
 })
 const Token = Schema.Struct({
   access_token: Schema.String,
-  refresh_token: Schema.String,
-  expires_in: Schema.Number,
+  refresh_token: Schema.optional(Schema.String),
+  expires_in: Schema.optional(Schema.Number),
 })
 const TokenPending = Schema.Struct({ error: Schema.String })
 const DeviceToken = Schema.Union([Token, TokenPending])
-const User = Schema.Struct({ id: Schema.String, email: Schema.String })
-const Org = Schema.Struct({ id: Schema.String, name: Schema.String })
+const KeyMint = Schema.Struct({ id: Schema.String, key: Schema.String })
 
 function oauth(http: HttpClient.HttpClient) {
   return {
@@ -40,11 +37,16 @@ function oauth(http: HttpClient.HttpClient) {
     method: {
       id: methodID,
       type: "oauth",
-      label: "OpenCode Console account",
+      label: "Vega Code account",
     },
     authorize: () =>
       Effect.gen(function* () {
-        const device = yield* post(http, `${defaultServer}/auth/device/code`, { client_id: clientID }, Device)
+        const device = yield* post(
+          http,
+          `${defaultServer}/api/auth/device/code`,
+          { client_id: clientID, scope: "api" },
+          Device,
+        )
         const verification = yield* Effect.try({
           try: () => {
             const url = new URL(device.verification_uri_complete, `${defaultServer}/`)
@@ -61,24 +63,8 @@ function oauth(http: HttpClient.HttpClient) {
           callback: poll(http, defaultServer, device.device_code, Duration.seconds(device.interval)),
         }
       }),
-    refresh: (credential) =>
-      Effect.gen(function* () {
-        const server = typeof credential.metadata?.server === "string" ? credential.metadata.server : defaultServer
-        const token = yield* post(
-          http,
-          `${server}/auth/device/token`,
-          { grant_type: "refresh_token", refresh_token: credential.refresh, client_id: clientID },
-          Token,
-        )
-        return {
-          ...credential,
-          access: token.access_token,
-          refresh: token.refresh_token,
-          expires: Date.now() + token.expires_in * 1000,
-        }
-      }),
     label: (credential) => {
-      return typeof credential.metadata?.orgName === "string" ? credential.metadata.orgName : undefined
+      return typeof credential.metadata?.email === "string" ? credential.metadata.email : undefined
     },
   } satisfies IntegrationOAuthMethodRegistration
 }
@@ -101,7 +87,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
       providers = credential
         ? yield* fetchProviders(http, credential).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(Effect.as(undefined)),
+              Effect.logWarning("failed to load Vega Code provider config", { cause }).pipe(Effect.as(undefined)),
             ),
           )
         : undefined
@@ -109,14 +95,30 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
 
     yield* ctx.integration.transform((draft) => {
       draft.update("opencode", (integration) => {
-        integration.name = "OpenCode"
+        integration.name = "Vega Code"
       })
       draft.method.update(oauth(http))
-      draft.method.update({ integrationID: "opencode", method: { type: "key", label: "API key (service account)" } })
+      draft.method.update({ integrationID: "opencode", method: { type: "key", label: "API key" } })
+      draft.method.update({
+        integrationID: "opencode",
+        method: { type: "env", names: ["VEGA_API_KEY", "VEGACODE_API_KEY", "OPENCODE_API_KEY"] },
+      })
+      draft.remove(Integration.ID.make("opencode-go"))
     })
 
     connected = (yield* ctx.integration.connection.active("opencode")) !== undefined
     yield* ctx.catalog.transform((catalog) => {
+      catalog.provider.remove(ProviderV2.ID.make("opencode-go"))
+      catalog.provider.update(ProviderV2.ID.opencode, (provider) => {
+        provider.name = "Vega Code"
+        provider.integrationID = Integration.ID.make("opencode")
+        provider.api = {
+          type: "aisdk",
+          package: "@ai-sdk/openai-compatible",
+          url: `${defaultServer}${apiPath}`,
+        }
+      })
+
       for (const [providerID, item] of Object.entries(providers ?? {})) {
         catalog.provider.update(providerID, (provider) => {
           provider.integrationID = Integration.ID.make("opencode")
@@ -173,16 +175,11 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
 
       const item = catalog.provider.get(ProviderV2.ID.opencode)
       if (!item) return
-      const hasKey = Boolean(process.env.OPENCODE_API_KEY || connected || item.provider.request.body.apiKey)
-      catalog.provider.update(item.provider.id, (provider) => {
-        if (!hasKey) provider.request.body.apiKey = "public"
-      })
-      if (hasKey) return
-      for (const model of item.models.values()) {
-        if (!model.cost.some((cost) => cost.input > 0)) continue
-        catalog.model.update(item.provider.id, model.id, (draft) => {
-          draft.enabled = false
-        })
+      const remote = providers?.[ProviderV2.ID.opencode]?.models ?? {}
+      const hasKey = connected || typeof item.provider.request.body.apiKey === "string"
+      for (const modelID of [...item.models.keys()]) {
+        if (modelID in remote) continue
+        if (!hasKey || connected) catalog.model.remove(item.provider.id, modelID)
       }
     })
 
@@ -199,24 +196,18 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
 function fetchProviders(http: HttpClient.HttpClient, value: CredentialValue) {
   const metadata = value.metadata
   const server = typeof metadata?.server === "string" ? metadata.server : defaultServer
-  const orgID = typeof metadata?.orgID === "string" ? metadata.orgID : undefined
   const token = value.type === "oauth" ? value.access : value.key
   return http
     .execute(
-      HttpClientRequest.get(`${server}/api/config`).pipe(
+      HttpClientRequest.get(`${server}${apiPath}/models`).pipe(
         HttpClientRequest.acceptJson,
         HttpClientRequest.bearerToken(token),
-        HttpClientRequest.setHeaders(orgID ? { "x-org-id": orgID } : {}),
       ),
     )
     .pipe(
-      Effect.flatMap((response) => {
-        if (response.status === 404) return Effect.succeed(undefined)
-        return HttpClientResponse.filterStatusOk(response).pipe(
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(RemoteResponse)),
-          Effect.map((remote) => remote.config.provider),
-        )
-      }),
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(Models)),
+      Effect.map((list) => provider(server, list)),
     )
 }
 
@@ -251,7 +242,7 @@ function poll(http: HttpClient.HttpClient, server: string, deviceCode: string, i
       yield* Effect.sleep(wait)
       const result = yield* post(
         http,
-        `${server}/auth/device/token`,
+        `${server}/api/auth/device/token`,
         {
           grant_type: "urn:ietf:params:oauth:grant-type:device_code",
           device_code: deviceCode,
@@ -270,28 +261,32 @@ function poll(http: HttpClient.HttpClient, server: string, deviceCode: string, i
   return loop(interval)
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
 function credential(http: HttpClient.HttpClient, server: string, token: typeof Token.Type) {
   return Effect.gen(function* () {
-    const [user, orgs] = yield* Effect.all(
-      [
-        get(http, `${server}/api/user`, token.access_token, User),
-        get(http, `${server}/api/orgs`, token.access_token, Schema.Array(Org)),
-      ],
-      { concurrency: 2 },
-    )
-    const org = orgs.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))[0]
+    const minted = yield* post(http, `${server}${apiPath}/keys/vegacode`, {}, KeyMint, true, token.access_token)
+    const account = yield* get(
+      http,
+      `${server}${apiPath}/account`,
+      minted.key,
+      Schema.Record(Schema.String, Schema.Unknown),
+    ).pipe(Effect.catch(() => Effect.succeed({} as Record<string, unknown>)))
+    const email = [account, account.user, account.data]
+      .map((item) => (isRecord(item) && typeof item.email === "string" ? item.email : undefined))
+      .find((item) => item !== undefined)
     return Credential.OAuth.make({
       type: "oauth" as const,
       methodID,
-      access: token.access_token,
-      refresh: token.refresh_token,
-      expires: Date.now() + token.expires_in * 1000,
+      access: minted.key,
+      refresh: token.refresh_token ?? token.access_token,
+      expires: Date.now() + 100 * 365 * 24 * 60 * 60 * 1000,
       metadata: {
         server,
-        accountID: user.id,
-        email: user.email,
-        orgID: org?.id,
-        orgName: org?.name,
+        accountID: email ?? minted.id,
+        email,
+        keyID: minted.id,
       },
     })
   })
@@ -309,10 +304,12 @@ function post<S extends Schema.Top>(
   body: Record<string, string>,
   schema: S,
   statusOk = true,
+  token?: string,
 ) {
   return HttpClientRequest.post(url).pipe(
     HttpClientRequest.acceptJson,
     HttpClientRequest.schemaBodyJson(Schema.Record(Schema.String, Schema.String))(body),
+    Effect.map((request) => (token ? request.pipe(HttpClientRequest.bearerToken(token)) : request)),
     Effect.flatMap((request) => http.execute(request)),
     Effect.flatMap((response) => (statusOk ? HttpClientResponse.filterStatusOk(response) : Effect.succeed(response))),
     Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)),

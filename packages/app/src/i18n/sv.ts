@@ -227,11 +227,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API-nyckel",
   "provider.connect.apiKey.required": "API-nyckel krävs",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen ger dig tillgång till en utvald uppsättning pålitliga optimerade modeller för kodningsagenter.",
+    "Vega Code ger dig tillgång till en utvald uppsättning pålitliga optimerade modeller för kodningsagenter.",
   "provider.connect.opencodeZen.line2":
     "Med en enda API-nyckel får du tillgång till modeller som Claude, GPT, Gemini, GLM och mer.",
   "provider.connect.opencodeZen.visit.prefix": "Besök ",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": " för att hämta din API-nyckel.",
   "provider.connect.oauth.code.visit.prefix": "Besök ",
   "provider.connect.oauth.code.visit.link": "denna länk",

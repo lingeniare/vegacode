@@ -225,11 +225,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "សោ API",
   "provider.connect.apiKey.required": "ត្រូវការសោ API",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen ផ្តល់ឱ្យអ្នកនូវម៉ូដែលដែលបានជ្រើសរើស និងកែលម្អសម្រាប់ភ្នាក់ងារសរសេរកូដ។",
+    "Vega Code ផ្តល់ឱ្យអ្នកនូវម៉ូដែលដែលបានជ្រើសរើស និងកែលម្អសម្រាប់ភ្នាក់ងារសរសេរកូដ។",
   "provider.connect.opencodeZen.line2":
     "ជាមួយនឹងសោ API តែមួយ អ្នកនឹងទទួលបានការចូលប្រើម៉ូដែលដូចជា Claude, GPT, Gemini, GLM និងច្រើនទៀត។",
   "provider.connect.opencodeZen.visit.prefix": "ទស្សនា",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": "ដើម្បីប្រមូលសោ API របស់អ្នក។",
   "provider.connect.oauth.code.visit.prefix": "ទស្សនា",
   "provider.connect.oauth.code.visit.link": "តំណនេះ។",

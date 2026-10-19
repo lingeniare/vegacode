@@ -225,11 +225,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "ລະຫັດ API",
   "provider.connect.apiKey.required": "ຕ້ອງການລະຫັດ API",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen ໃຫ້ທ່ານເຂົ້າເຖິງຊຸດຮູບແບບການປັບແຕ່ງທີ່ໜ້າເຊື່ອຖືໄດ້ສຳລັບຕົວແທນການເຂົ້າລະຫັດ.",
+    "Vega Code ໃຫ້ທ່ານເຂົ້າເຖິງຊຸດຮູບແບບການປັບແຕ່ງທີ່ໜ້າເຊື່ອຖືໄດ້ສຳລັບຕົວແທນການເຂົ້າລະຫັດ.",
   "provider.connect.opencodeZen.line2":
     "ດ້ວຍລະຫັດ API ດຽວເຈົ້າຈະໄດ້ຮັບການເຂົ້າເຖິງຕົວແບບເຊັ່ນ: Claude, GPT, Gemini, GLM ແລະອື່ນໆ.",
   "provider.connect.opencodeZen.visit.prefix": "ຢ້ຽມຢາມ",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": "ເພື່ອເກັບກຳລະຫັດ API ຂອງທ່ານ.",
   "provider.connect.oauth.code.visit.prefix": "ຢ້ຽມຢາມ",
   "provider.connect.oauth.code.visit.link": "ລິ້ງນີ້",

@@ -228,11 +228,11 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API ключ",
   "provider.connect.apiKey.required": "Изисква се ключ API",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen ви дава достъп до подбран набор от надеждни оптимизирани модели за кодиращи агенти.",
+    "Vega Code ви дава достъп до подбран набор от надеждни оптимизирани модели за кодиращи агенти.",
   "provider.connect.opencodeZen.line2":
     "С един ключ API ще получите достъп до модели като Claude, GPT, Gemini, GLM и други.",
   "provider.connect.opencodeZen.visit.prefix": "Посетете",
-  "provider.connect.opencodeZen.visit.link": "opencode.ai/zen",
+  "provider.connect.opencodeZen.visit.link": "api.vega.chat",
   "provider.connect.opencodeZen.visit.suffix": "за да вземете своя ключ API.",
   "provider.connect.oauth.code.visit.prefix": "Посетете",
   "provider.connect.oauth.code.visit.link": "тази връзка",

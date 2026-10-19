@@ -229,7 +229,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Ključ API",
   "provider.connect.apiKey.required": "Potreban je ključ API",
   "provider.connect.opencodeZen.line1":
-    "OpenCode Zen vam daje pristup odabranom skupu pouzdanih optimiziranih modela za agente za kodiranje.",
+    "Vega Code vam daje pristup odabranom skupu pouzdanih optimiziranih modela za agente za kodiranje.",
   "provider.connect.opencodeZen.line2":
     "S jednim ključem API dobit ćete pristup modelima kao što su Claude, GPT, Gemini, GLM i još mnogo toga.",
   "provider.connect.opencodeZen.visit.prefix": "Posjetiti",

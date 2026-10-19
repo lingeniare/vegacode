@@ -13,6 +13,7 @@ import {
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { AccountRepo, type AccountRow } from "./repo"
 import { normalizeServerUrl } from "./url"
+import { apiPath, Models, provider } from "@opencode-ai/core/plugin/provider/vega"
 import {
   type AccountError,
   AccessToken,
@@ -68,10 +69,6 @@ export type ActiveOrg = {
   org: Org
 }
 
-class RemoteConfig extends Schema.Class<RemoteConfig>("RemoteConfig")({
-  config: Schema.Record(Schema.String, Schema.Json),
-}) {}
-
 const DurationFromSeconds = Schema.Number.pipe(
   Schema.decodeTo(Schema.Duration, {
     decode: SchemaGetter.transform((n) => Duration.seconds(n)),
@@ -81,8 +78,8 @@ const DurationFromSeconds = Schema.Number.pipe(
 
 class TokenRefresh extends Schema.Class<TokenRefresh>("TokenRefresh")({
   access_token: AccessToken,
-  refresh_token: RefreshToken,
-  expires_in: DurationFromSeconds,
+  refresh_token: Schema.optional(RefreshToken),
+  expires_in: Schema.optional(DurationFromSeconds),
 }) {}
 
 class DeviceAuth extends Schema.Class<DeviceAuth>("DeviceAuth")({
@@ -95,9 +92,9 @@ class DeviceAuth extends Schema.Class<DeviceAuth>("DeviceAuth")({
 
 class DeviceTokenSuccess extends Schema.Class<DeviceTokenSuccess>("DeviceTokenSuccess")({
   access_token: AccessToken,
-  refresh_token: RefreshToken,
-  token_type: Schema.Literal("Bearer"),
-  expires_in: DurationFromSeconds,
+  refresh_token: Schema.optional(RefreshToken),
+  token_type: Schema.optional(Schema.String),
+  expires_in: Schema.optional(DurationFromSeconds),
 }) {}
 
 class DeviceTokenError extends Schema.Class<DeviceTokenError>("DeviceTokenError")({
@@ -115,12 +112,15 @@ class DeviceTokenError extends Schema.Class<DeviceTokenError>("DeviceTokenError"
 
 const DeviceToken = Schema.Union([DeviceTokenSuccess, DeviceTokenError])
 
-class User extends Schema.Class<User>("User")({
-  id: AccountID,
-  email: Schema.String,
+class KeyMint extends Schema.Class<KeyMint>("KeyMint")({
+  id: Schema.String,
+  key: AccessToken,
 }) {}
 
-class ClientId extends Schema.Class<ClientId>("ClientId")({ client_id: Schema.String }) {}
+class ClientId extends Schema.Class<ClientId>("ClientId")({
+  client_id: Schema.String,
+  scope: Schema.String,
+}) {}
 
 class DeviceTokenRequest extends Schema.Class<DeviceTokenRequest>("DeviceTokenRequest")({
   grant_type: Schema.String,
@@ -134,12 +134,16 @@ class TokenRefreshRequest extends Schema.Class<TokenRefreshRequest>("TokenRefres
   client_id: Schema.String,
 }) {}
 
-const clientId = "opencode-cli"
+const clientId = "vegacode"
+const keyExpiry = Duration.days(3650)
 const eagerRefreshThreshold = Duration.minutes(5)
 const eagerRefreshThresholdMs = Duration.toMillis(eagerRefreshThreshold)
 
 const isTokenFresh = (tokenExpiry: number | null, now: number) =>
   tokenExpiry != null && tokenExpiry > now + eagerRefreshThresholdMs
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
 
 const mapAccountServiceError =
   (message = "Account service operation failed") =>
@@ -175,7 +179,7 @@ export interface Interface {
   readonly orgs: (accountID: AccountID) => Effect.Effect<readonly Org[], AccountError>
   readonly config: (
     accountID: AccountID,
-    orgID: OrgID,
+    orgID: Option.Option<OrgID>,
   ) => Effect.Effect<Option.Option<Record<string, unknown>>, AccountError>
   readonly token: (accountID: AccountID) => Effect.Effect<Option.Option<AccessToken>, AccountError>
   readonly login: (url: string) => Effect.Effect<Login, AccountError>
@@ -213,11 +217,25 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
         mapAccountServiceError("HTTP request failed"),
       )
 
+    const mintKey = Effect.fnUntraced(function* (url: string, sessionToken: string) {
+      const response = yield* executeEffectOk(
+        HttpClientRequest.post(`${url}${apiPath}/keys/vegacode`).pipe(
+          HttpClientRequest.acceptJson,
+          HttpClientRequest.bearerToken(sessionToken),
+          HttpClientRequest.schemaBodyJson(Schema.Record(Schema.String, Schema.String))({}),
+        ),
+      )
+
+      return yield* HttpClientResponse.schemaBodyJson(KeyMint)(response).pipe(
+        mapAccountServiceError("Failed to decode response"),
+      )
+    })
+
     const refreshToken = Effect.fnUntraced(function* (row: AccountRow) {
       const now = yield* Clock.currentTimeMillis
 
       const response = yield* executeEffectOk(
-        HttpClientRequest.post(`${row.url}/auth/device/token`).pipe(
+        HttpClientRequest.post(`${row.url}/api/auth/device/token`).pipe(
           HttpClientRequest.acceptJson,
           HttpClientRequest.schemaBodyJson(TokenRefreshRequest)(
             new TokenRefreshRequest({
@@ -233,16 +251,17 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
         mapAccountServiceError("Failed to decode response"),
       )
 
-      const expiry = Option.some(now + Duration.toMillis(parsed.expires_in))
+      const minted = yield* mintKey(row.url, parsed.access_token)
+      const expiry = Option.some(now + Duration.toMillis(keyExpiry))
 
       yield* repo.persistToken({
         accountID: row.id,
-        accessToken: parsed.access_token,
-        refreshToken: parsed.refresh_token,
+        accessToken: minted.key,
+        refreshToken: parsed.refresh_token ?? RefreshToken.make(parsed.access_token),
         expiry,
       })
 
-      return parsed.access_token
+      return minted.key
     })
 
     const refreshTokenCache = yield* Cache.make<AccountID, AccessToken, AccountError>({
@@ -282,30 +301,20 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
       return Option.some({ account, accessToken })
     })
 
-    const fetchOrgs = Effect.fnUntraced(function* (url: string, accessToken: AccessToken) {
+    const fetchEmail = Effect.fnUntraced(function* (url: string, accessToken: AccessToken) {
       const response = yield* executeReadOk(
-        HttpClientRequest.get(`${url}/api/orgs`).pipe(
+        HttpClientRequest.get(`${url}${apiPath}/account`).pipe(
           HttpClientRequest.acceptJson,
           HttpClientRequest.bearerToken(accessToken),
         ),
       )
 
-      return yield* HttpClientResponse.schemaBodyJson(Schema.Array(Org))(response).pipe(
-        mapAccountServiceError("Failed to decode response"),
-      )
-    })
-
-    const fetchUser = Effect.fnUntraced(function* (url: string, accessToken: AccessToken) {
-      const response = yield* executeReadOk(
-        HttpClientRequest.get(`${url}/api/user`).pipe(
-          HttpClientRequest.acceptJson,
-          HttpClientRequest.bearerToken(accessToken),
-        ),
-      )
-
-      return yield* HttpClientResponse.schemaBodyJson(User)(response).pipe(
-        mapAccountServiceError("Failed to decode response"),
-      )
+      const body = yield* HttpClientResponse.schemaBodyJson(Schema.Record(Schema.String, Schema.Unknown))(
+        response,
+      ).pipe(mapAccountServiceError("Failed to decode response"))
+      return [body, body.user, body.data]
+        .map((item) => (isRecord(item) && typeof item.email === "string" ? item.email : undefined))
+        .find((item) => item !== undefined)
     })
 
     const token = Effect.fn("Account.token")((accountID: AccountID) =>
@@ -339,57 +348,65 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
       )
     })
 
-    const orgs = Effect.fn("Account.orgs")(function* (accountID: AccountID) {
-      const resolved = yield* resolveAccess(accountID)
-      if (Option.isNone(resolved)) return []
-
-      const { account, accessToken } = resolved.value
-
-      return yield* fetchOrgs(account.url, accessToken)
+    const orgs = Effect.fn("Account.orgs")(function* (_accountID: AccountID) {
+      return [] as readonly Org[]
     })
 
     const remove = Effect.fn("Account.remove")(function* (accountID: AccountID) {
+      const row = yield* repo.getRow(accountID)
+      if (Option.isSome(row)) {
+        yield* http
+          .execute(
+            HttpClientRequest.post(`${row.value.url}${apiPath}/keys/vegacode/revoke`).pipe(
+              HttpClientRequest.acceptJson,
+              HttpClientRequest.bearerToken(row.value.access_token),
+            ),
+          )
+          .pipe(Effect.ignore)
+      }
+
       const active = yield* repo.active()
       yield* repo.remove(accountID)
       if (Option.isNone(active) || active.value.id !== accountID) return
 
-      const next = (yield* orgsByAccount()).flatMap((group) =>
-        group.orgs.map((org) => ({ accountID: group.account.id, orgID: org.id })),
-      )[0]
+      const next = (yield* repo.list())[0]
       if (!next) return
-      yield* repo.use(next.accountID, Option.some(next.orgID))
+      yield* repo.use(next.id, Option.none())
     })
 
-    const config = Effect.fn("Account.config")(function* (accountID: AccountID, orgID: OrgID) {
+    const config = Effect.fn("Account.config")(function* (accountID: AccountID, _orgID: Option.Option<OrgID>) {
       const resolved = yield* resolveAccess(accountID)
       if (Option.isNone(resolved)) return Option.none()
 
       const { account, accessToken } = resolved.value
 
-      const response = yield* executeRead(
-        HttpClientRequest.get(`${account.url}/api/config`).pipe(
+      const response = yield* executeReadOk(
+        HttpClientRequest.get(`${account.url}${apiPath}/models`).pipe(
           HttpClientRequest.acceptJson,
           HttpClientRequest.bearerToken(accessToken),
-          HttpClientRequest.setHeaders({ "x-org-id": orgID }),
         ),
       )
 
-      if (response.status === 404) return Option.none()
-
-      const ok = yield* HttpClientResponse.filterStatusOk(response).pipe(mapAccountServiceError())
-
-      const parsed = yield* HttpClientResponse.schemaBodyJson(RemoteConfig)(ok).pipe(
+      const list = yield* HttpClientResponse.schemaBodyJson(Models)(response).pipe(
         mapAccountServiceError("Failed to decode response"),
       )
-      return Option.some(parsed.config)
+      const providers = provider(account.url, list) ?? {}
+      return Option.some({
+        provider: Object.fromEntries(
+          Object.entries(providers).map(([id, item]) => [
+            id,
+            { ...item, options: { ...item.options, apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" } },
+          ]),
+        ),
+      })
     })
 
     const login = Effect.fn("Account.login")(function* (server: string) {
       const normalizedServer = normalizeServerUrl(server)
       const response = yield* executeEffectOk(
-        HttpClientRequest.post(`${normalizedServer}/auth/device/code`).pipe(
+        HttpClientRequest.post(`${normalizedServer}/api/auth/device/code`).pipe(
           HttpClientRequest.acceptJson,
-          HttpClientRequest.schemaBodyJson(ClientId)(new ClientId({ client_id: clientId })),
+          HttpClientRequest.schemaBodyJson(ClientId)(new ClientId({ client_id: clientId, scope: "api" })),
         ),
       )
 
@@ -416,7 +433,7 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
 
     const poll = Effect.fn("Account.poll")(function* (input: Login) {
       const response = yield* executeEffect(
-        HttpClientRequest.post(`${input.server}/auth/device/token`).pipe(
+        HttpClientRequest.post(`${input.server}/api/auth/device/token`).pipe(
           HttpClientRequest.acceptJson,
           HttpClientRequest.schemaBodyJson(DeviceTokenRequest)(
             new DeviceTokenRequest({
@@ -433,31 +450,29 @@ const layer: Layer.Layer<Service, never, AccountRepo.Service | HttpClient.HttpCl
       )
 
       if (parsed instanceof DeviceTokenError) return parsed.toPollResult()
-      const accessToken = parsed.access_token
+      const sessionToken = parsed.access_token
 
-      const user = fetchUser(input.server, accessToken)
-      const orgs = fetchOrgs(input.server, accessToken)
-
-      const [account, remoteOrgs] = yield* Effect.all([user, orgs], { concurrency: 2 })
-
-      // TODO: When there are multiple orgs, let the user choose
-      const firstOrgID = remoteOrgs.length > 0 ? Option.some(remoteOrgs[0].id) : Option.none<OrgID>()
+      const minted = yield* mintKey(input.server, sessionToken)
+      const email = yield* fetchEmail(input.server, minted.key).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
 
       const now = yield* Clock.currentTimeMillis
-      const expiry = now + Duration.toMillis(parsed.expires_in)
-      const refreshToken = parsed.refresh_token
+      const expiry = now + Duration.toMillis(keyExpiry)
+      const refreshToken = parsed.refresh_token ?? RefreshToken.make(sessionToken)
+      const account = email ?? minted.id
 
       yield* repo.persistAccount({
-        id: account.id,
-        email: account.email,
+        id: AccountID.make(account),
+        email: account,
         url: input.server,
-        accessToken,
+        accessToken: minted.key,
         refreshToken,
         expiry,
-        orgID: firstOrgID,
+        orgID: Option.none(),
       })
 
-      return new PollSuccess({ email: account.email })
+      return new PollSuccess({ email: account })
     })
 
     return Service.of({

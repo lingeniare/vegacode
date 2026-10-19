@@ -1,7 +1,7 @@
 import { expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Duration, Effect, Layer, Option, Schema } from "effect"
+import { Duration, Effect, Layer, Option } from "effect"
 import { sql } from "drizzle-orm"
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
 
@@ -14,8 +14,6 @@ import {
   AccountTransportError,
   DeviceCode,
   Login,
-  Org,
-  OrgID,
   RefreshToken,
   UserCode,
 } from "../../src/account/schema"
@@ -48,10 +46,6 @@ const json = (req: Parameters<typeof HttpClientResponse.fromWeb>[0], body: unkno
     }),
   )
 
-const encodeOrg = Schema.encodeSync(Org)
-
-const org = (id: string, name: string) => encodeOrg(new Org({ id: OrgID.make(id), name }))
-
 const login = () =>
   new Login({
     code: DeviceCode.make("device-code"),
@@ -62,10 +56,20 @@ const login = () =>
     interval: Duration.seconds(5),
   })
 
+const vegaModel = {
+  id: "vega/test-model",
+  name: "Vega Test Model",
+  context_length: 128000,
+  architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+  pricing: { prompt: "0.000001", completion: "0.000002" },
+  top_provider: { context_length: 128000, max_completion_tokens: 4096 },
+  supported_parameters: ["tools"],
+}
+
 const deviceTokenClient = (body: unknown, status = 400) =>
   HttpClient.make((req) =>
     Effect.succeed(
-      req.url === "https://one.example.com/auth/device/token" ? json(req, body, status) : json(req, {}, 404),
+      req.url === "https://one.example.com/api/auth/device/token" ? json(req, body, status) : json(req, {}, 404),
     ),
   )
 
@@ -79,7 +83,7 @@ it.live("login resolves origin-rooted verification URLs from servers with base p
       Effect.gen(function* () {
         seen.push(`${req.method} ${req.url}`)
 
-        if (req.url === "https://one.example.com/console/auth/device/code") {
+        if (req.url === "https://one.example.com/console/api/auth/device/code") {
           return json(req, {
             device_code: "device-code",
             user_code: "user-code",
@@ -95,9 +99,35 @@ it.live("login resolves origin-rooted verification URLs from servers with base p
 
     const result = yield* Account.use.login("https://one.example.com/console/").pipe(Effect.provide(live(client)))
 
-    expect(seen).toEqual(["POST https://one.example.com/console/auth/device/code"])
+    expect(seen).toEqual(["POST https://one.example.com/console/api/auth/device/code"])
     expect(result.server).toBe("https://one.example.com/console")
     expect(result.url).toBe("https://one.example.com/console/device?user_code=user-code")
+  }),
+)
+
+it.live("login requests a device code for the vegacode application", () =>
+  Effect.gen(function* () {
+    let body: unknown
+    const client = HttpClient.make((req) =>
+      Effect.gen(function* () {
+        if (req.url === "https://api.vega.chat/api/auth/device/code") {
+          body = req.body._tag === "Uint8Array" ? JSON.parse(new TextDecoder().decode(req.body.body)) : undefined
+          return json(req, {
+            device_code: "device-code",
+            user_code: "user-code",
+            verification_uri_complete: "https://api.vega.chat/device?user_code=user-code",
+            expires_in: 600,
+            interval: 5,
+          })
+        }
+
+        return json(req, {}, 404)
+      }),
+    )
+
+    yield* Account.use.login("https://api.vega.chat").pipe(Effect.provide(live(client)))
+
+    expect(body).toEqual({ client_id: "vegacode", scope: "api" })
   }),
 )
 
@@ -136,12 +166,12 @@ it.live("login maps transport failures to account transport errors", () =>
     expect(error).toBeInstanceOf(AccountTransportError)
     if (error instanceof AccountTransportError) {
       expect(error.method).toBe("POST")
-      expect(error.url).toBe("https://one.example.com/auth/device/code")
+      expect(error.url).toBe("https://one.example.com/api/auth/device/code")
     }
   }),
 )
 
-it.live("orgsByAccount groups orgs per account", () =>
+it.live("orgsByAccount returns accounts without orgs", () =>
   Effect.gen(function* () {
     yield* AccountRepo.Service.use((r) =>
       r.persistAccount({
@@ -171,30 +201,21 @@ it.live("orgsByAccount groups orgs per account", () =>
     const client = HttpClient.make((req) =>
       Effect.gen(function* () {
         seen.push(`${req.method} ${req.url}`)
-
-        if (req.url === "https://one.example.com/api/orgs") {
-          return json(req, [org("org-1", "One")])
-        }
-
-        if (req.url === "https://two.example.com/api/orgs") {
-          return json(req, [org("org-2", "Two A"), org("org-3", "Two B")])
-        }
-
-        return json(req, [], 404)
+        return json(req, {}, 404)
       }),
     )
 
     const rows = yield* Account.use.orgsByAccount().pipe(Effect.provide(live(client)))
 
-    expect(rows.map((row) => [row.account.id, row.orgs.map((org) => org.id)]).map(([id, orgs]) => [id, orgs])).toEqual([
-      [AccountID.make("user-1"), [OrgID.make("org-1")]],
-      [AccountID.make("user-2"), [OrgID.make("org-2"), OrgID.make("org-3")]],
+    expect(rows.map((row) => [row.account.id, row.orgs.length])).toEqual([
+      [AccountID.make("user-1"), 0],
+      [AccountID.make("user-2"), 0],
     ])
-    expect(seen).toEqual(["GET https://one.example.com/api/orgs", "GET https://two.example.com/api/orgs"])
+    expect(seen).toEqual([])
   }),
 )
 
-it.live("remove switches to another org when the active account is removed", () =>
+it.live("remove revokes the VEGA app key and keeps the active account", () =>
   Effect.gen(function* () {
     const first = AccountID.make("user-1")
     const second = AccountID.make("user-2")
@@ -207,7 +228,7 @@ it.live("remove switches to another org when the active account is removed", () 
         accessToken: AccessToken.make("at_1"),
         refreshToken: RefreshToken.make("rt_1"),
         expiry: Date.now() + outsideEagerRefreshWindow,
-        orgID: Option.some(OrgID.make("org-1")),
+        orgID: Option.none(),
       }),
     )
 
@@ -219,29 +240,32 @@ it.live("remove switches to another org when the active account is removed", () 
         accessToken: AccessToken.make("at_2"),
         refreshToken: RefreshToken.make("rt_2"),
         expiry: Date.now() + outsideEagerRefreshWindow,
-        orgID: Option.some(OrgID.make("org-2")),
+        orgID: Option.none(),
       }),
     )
 
+    const seen: Array<string> = []
     const client = HttpClient.make((req) =>
-      Effect.succeed(
-        req.url === "https://one.example.com/api/orgs" ? json(req, [org("org-1", "One")]) : json(req, [], 404),
-      ),
+      Effect.gen(function* () {
+        seen.push(`${req.method} ${req.url}`)
+        if (req.url === "https://two.example.com/api/v1/keys/vegacode/revoke") {
+          expect(req.headers.authorization).toBe("Bearer at_2")
+          return json(req, { revoked: true })
+        }
+        return json(req, {}, 404)
+      }),
     )
 
     yield* Account.use.remove(second).pipe(Effect.provide(live(client)))
 
+    expect(seen).toEqual(["POST https://two.example.com/api/v1/keys/vegacode/revoke"])
     const active = yield* AccountRepo.use.active()
-    expect(Option.getOrThrow(active)).toEqual(
-      expect.objectContaining({
-        id: first,
-        active_org_id: OrgID.make("org-1"),
-      }),
-    )
+    expect(Option.getOrThrow(active).id).toBe(first)
+    expect(Option.getOrThrow(active).active_org_id).toBeNull()
   }),
 )
 
-it.live("token refresh persists the new token", () =>
+it.live("token refresh mints a new VEGA app key", () =>
   Effect.gen(function* () {
     const id = AccountID.make("user-1")
 
@@ -250,7 +274,7 @@ it.live("token refresh persists the new token", () =>
         id,
         email: "user@example.com",
         url: "https://one.example.com",
-        accessToken: AccessToken.make("at_old"),
+        accessToken: AccessToken.make("sk-apivega-old"),
         refreshToken: RefreshToken.make("rt_old"),
         expiry: Date.now() - 1_000,
         orgID: Option.none(),
@@ -259,24 +283,25 @@ it.live("token refresh persists the new token", () =>
 
     const client = HttpClient.make((req) =>
       Effect.succeed(
-        req.url === "https://one.example.com/auth/device/token"
+        req.url === "https://one.example.com/api/auth/device/token"
           ? json(req, {
-              access_token: "at_new",
+              access_token: "session_new",
               refresh_token: "rt_new",
-              expires_in: 60,
             })
-          : json(req, {}, 404),
+          : req.url === "https://one.example.com/api/v1/keys/vegacode"
+            ? json(req, { id: "key_new", key: "sk-apivega-new" })
+            : json(req, {}, 404),
       ),
     )
 
     const token = yield* Account.use.token(id).pipe(Effect.provide(live(client)))
 
     expect(Option.getOrThrow(token)).toBeDefined()
-    expect(String(Option.getOrThrow(token))).toBe("at_new")
+    expect(String(Option.getOrThrow(token))).toBe("sk-apivega-new")
 
     const row = yield* AccountRepo.use.getRow(id)
     const value = Option.getOrThrow(row)
-    expect(value.access_token).toBe(AccessToken.make("at_new"))
+    expect(value.access_token).toBe(AccessToken.make("sk-apivega-new"))
     expect(value.refresh_token).toBe(RefreshToken.make("rt_new"))
     expect(value.token_expiry).toBeGreaterThan(Date.now())
   }),
@@ -291,7 +316,7 @@ it.live("token refreshes before expiry when inside the eager refresh window", ()
         id,
         email: "user@example.com",
         url: "https://one.example.com",
-        accessToken: AccessToken.make("at_old"),
+        accessToken: AccessToken.make("sk-apivega-old"),
         refreshToken: RefreshToken.make("rt_old"),
         expiry: Date.now() + insideEagerRefreshWindow,
         orgID: Option.none(),
@@ -301,13 +326,16 @@ it.live("token refreshes before expiry when inside the eager refresh window", ()
     let refreshCalls = 0
     const client = HttpClient.make((req) =>
       Effect.promise(async () => {
-        if (req.url === "https://one.example.com/auth/device/token") {
+        if (req.url === "https://one.example.com/api/auth/device/token") {
           refreshCalls += 1
           return json(req, {
-            access_token: "at_new",
+            access_token: "session_new",
             refresh_token: "rt_new",
-            expires_in: 60,
           })
+        }
+
+        if (req.url === "https://one.example.com/api/v1/keys/vegacode") {
+          return json(req, { id: "key_new", key: "sk-apivega-new" })
         }
 
         return json(req, {}, 404)
@@ -316,12 +344,12 @@ it.live("token refreshes before expiry when inside the eager refresh window", ()
 
     const token = yield* Account.use.token(id).pipe(Effect.provide(live(client)))
 
-    expect(String(Option.getOrThrow(token))).toBe("at_new")
+    expect(String(Option.getOrThrow(token))).toBe("sk-apivega-new")
     expect(refreshCalls).toBe(1)
 
     const row = yield* AccountRepo.use.getRow(id)
     const value = Option.getOrThrow(row)
-    expect(value.access_token).toBe(AccessToken.make("at_new"))
+    expect(value.access_token).toBe(AccessToken.make("sk-apivega-new"))
     expect(value.refresh_token).toBe(RefreshToken.make("rt_new"))
   }),
 )
@@ -335,25 +363,24 @@ it.live("concurrent config and token requests coalesce token refresh", () =>
         id,
         email: "user@example.com",
         url: "https://one.example.com",
-        accessToken: AccessToken.make("at_old"),
+        accessToken: AccessToken.make("sk-apivega-old"),
         refreshToken: RefreshToken.make("rt_old"),
         expiry: Date.now() - 1_000,
-        orgID: Option.some(OrgID.make("org-9")),
+        orgID: Option.none(),
       }),
     )
 
     let refreshCalls = 0
     const client = HttpClient.make((req) =>
       Effect.promise(async () => {
-        if (req.url === "https://one.example.com/auth/device/token") {
+        if (req.url === "https://one.example.com/api/auth/device/token") {
           refreshCalls += 1
 
           if (refreshCalls === 1) {
             await new Promise((resolve) => setTimeout(resolve, 25))
             return json(req, {
-              access_token: "at_new",
+              access_token: "session_new",
               refresh_token: "rt_new",
-              expires_in: 60,
             })
           }
 
@@ -367,8 +394,13 @@ it.live("concurrent config and token requests coalesce token refresh", () =>
           )
         }
 
-        if (req.url === "https://one.example.com/api/config") {
-          return json(req, { config: { theme: "light", seats: 5 } })
+        if (req.url === "https://one.example.com/api/v1/keys/vegacode") {
+          return json(req, { id: "key_new", key: "sk-apivega-new" })
+        }
+
+        if (req.url === "https://one.example.com/api/v1/models") {
+          expect(req.headers.authorization).toBe("Bearer sk-apivega-new")
+          return json(req, { data: [vegaModel] })
         }
 
         return json(req, {}, 404)
@@ -376,21 +408,29 @@ it.live("concurrent config and token requests coalesce token refresh", () =>
     )
 
     const [cfg, token] = yield* Account.Service.use((s) =>
-      Effect.all([s.config(id, OrgID.make("org-9")), s.token(id)], { concurrency: 2 }),
+      Effect.all([s.config(id, Option.none()), s.token(id)], { concurrency: 2 }),
     ).pipe(Effect.provide(live(client)))
 
-    expect(Option.getOrThrow(cfg)).toEqual({ theme: "light", seats: 5 })
-    expect(String(Option.getOrThrow(token))).toBe("at_new")
+    const config = Option.getOrThrow(cfg)
+    expect(config.provider).toMatchObject({
+      opencode: {
+        name: "Vega Code",
+        api: "https://one.example.com/api/v1",
+        npm: "@ai-sdk/openai-compatible",
+        options: { apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" },
+      },
+    })
+    expect(String(Option.getOrThrow(token))).toBe("sk-apivega-new")
     expect(refreshCalls).toBe(1)
 
     const row = yield* AccountRepo.use.getRow(id)
     const value = Option.getOrThrow(row)
-    expect(value.access_token).toBe(AccessToken.make("at_new"))
+    expect(value.access_token).toBe(AccessToken.make("sk-apivega-new"))
     expect(value.refresh_token).toBe(RefreshToken.make("rt_new"))
   }),
 )
 
-it.live("config sends the selected org header", () =>
+it.live("config synthesizes the VEGA provider from the model list", () =>
   Effect.gen(function* () {
     const id = AccountID.make("user-1")
 
@@ -399,52 +439,61 @@ it.live("config sends the selected org header", () =>
         id,
         email: "user@example.com",
         url: "https://one.example.com",
-        accessToken: AccessToken.make("at_1"),
+        accessToken: AccessToken.make("sk-apivega-1"),
         refreshToken: RefreshToken.make("rt_1"),
         expiry: Date.now() + outsideEagerRefreshWindow,
         orgID: Option.none(),
       }),
     )
 
-    const seen: { auth?: string; org?: string } = {}
+    const seen: { auth?: string } = {}
     const client = HttpClient.make((req) =>
       Effect.gen(function* () {
         seen.auth = req.headers.authorization
-        seen.org = req.headers["x-org-id"]
 
-        if (req.url === "https://one.example.com/api/config") {
-          return json(req, { config: { theme: "light", seats: 5 } })
+        if (req.url === "https://one.example.com/api/v1/models") {
+          return json(req, { data: [vegaModel] })
         }
 
         return json(req, {}, 404)
       }),
     )
 
-    const cfg = yield* Account.Service.use((s) => s.config(id, OrgID.make("org-9"))).pipe(Effect.provide(live(client)))
+    const cfg = yield* Account.Service.use((s) => s.config(id, Option.none())).pipe(Effect.provide(live(client)))
 
-    expect(Option.getOrThrow(cfg)).toEqual({ theme: "light", seats: 5 })
-    expect(seen).toEqual({
-      auth: "Bearer at_1",
-      org: "org-9",
+    const config = Option.getOrThrow(cfg)
+    expect(config.provider).toMatchObject({
+      opencode: {
+        name: "Vega Code",
+        api: "https://one.example.com/api/v1",
+        npm: "@ai-sdk/openai-compatible",
+        options: { apiKey: "{env:OPENCODE_CONSOLE_TOKEN}" },
+        models: {
+          "vega/test-model": {
+            name: "Vega Test Model",
+            tool_call: true,
+            limit: { context: 128000, output: 4096 },
+          },
+        },
+      },
     })
+    expect(seen).toEqual({ auth: "Bearer sk-apivega-1" })
   }),
 )
 
-it.live("poll stores the account and first org on success", () =>
+it.live("poll mints and stores the VEGA app key on success", () =>
   Effect.gen(function* () {
     const client = HttpClient.make((req) =>
       Effect.succeed(
-        req.url === "https://one.example.com/auth/device/token"
+        req.url === "https://one.example.com/api/auth/device/token"
           ? json(req, {
-              access_token: "at_1",
-              refresh_token: "rt_1",
+              access_token: "session_1",
               token_type: "Bearer",
-              expires_in: 60,
             })
-          : req.url === "https://one.example.com/api/user"
-            ? json(req, { id: "user-1", email: "user@example.com" })
-            : req.url === "https://one.example.com/api/orgs"
-              ? json(req, [org("org-1", "One")])
+          : req.url === "https://one.example.com/api/v1/keys/vegacode"
+            ? json(req, { id: "key_1", key: "sk-apivega-1" })
+            : req.url === "https://one.example.com/api/v1/account"
+              ? json(req, { email: "user@example.com" })
               : json(req, {}, 404),
       ),
     )
@@ -459,11 +508,13 @@ it.live("poll stores the account and first org on success", () =>
     const active = yield* AccountRepo.use.active()
     expect(Option.getOrThrow(active)).toEqual(
       expect.objectContaining({
-        id: "user-1",
+        id: "user@example.com",
         email: "user@example.com",
-        active_org_id: "org-1",
+        active_org_id: null,
       }),
     )
+    const row = yield* AccountRepo.use.getRow(AccountID.make("user@example.com"))
+    expect(Option.getOrThrow(row).access_token).toBe(AccessToken.make("sk-apivega-1"))
   }),
 )
 

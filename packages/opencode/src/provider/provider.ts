@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { apiPath, defaultServer } from "@opencode-ai/core/plugin/provider/vega"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -219,25 +220,23 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       }),
     opencode: Effect.fnUntraced(function* (input: Info) {
       const env = yield* dep.env()
-      const hasKey = iife(() => {
-        if (input.env.some((item) => env[item])) return true
-        return false
-      })
+      const remote = (yield* dep.config()).provider?.["opencode"]
+      const envKey = ["VEGA_API_KEY", "VEGACODE_API_KEY", ...input.env]
+        .map((item) => env[item])
+        .find((item) => item !== undefined)
       const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
+        envKey !== undefined || Boolean(yield* dep.auth(input.id)) || Boolean(remote?.options?.apiKey)
 
-      if (!ok) {
-        for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
-          delete input.models[key]
-        }
+      for (const key of Object.keys(input.models)) {
+        if (!ok || (remote?.models !== undefined && !(key in remote.models))) delete input.models[key]
       }
 
       return {
         autoload: Object.keys(input.models).length > 0,
-        options: ok ? {} : { apiKey: "public" },
+        options: {
+          baseURL: remote?.api ?? `${defaultServer}${apiPath}`,
+          ...(envKey && !input.env.some((item) => env[item]) ? { apiKey: envKey } : {}),
+        },
       }
     }),
     openai: () =>
