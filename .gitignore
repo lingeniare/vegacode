@@ -33,3 +33,5 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 /artifacts/
+/connect-app.md
+/AGENTS.md
